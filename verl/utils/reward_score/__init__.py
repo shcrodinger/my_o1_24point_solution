@@ -15,7 +15,10 @@
 
 
 def _default_compute_score(data_source, solution_str, ground_truth, extra_info=None):
-    if data_source == 'openai/gsm8k':
+    if data_source == '24point':
+        from . import point24
+        res = point24.compute_score(solution_str, ground_truth, extra_info)
+    elif data_source == 'openai/gsm8k':
         from . import gsm8k
         res = gsm8k.compute_score(solution_str, ground_truth)
     elif data_source in ['lighteval/MATH', 'DigitalLearningGmbH/MATH-lighteval']:
@@ -32,8 +35,10 @@ def _default_compute_score(data_source, solution_str, ground_truth, extra_info=N
         res = prime_code.compute_score(solution_str, ground_truth, continuous=True)
     else:
         raise NotImplementedError
-
+    
     if isinstance(res, (int, float, bool)):
         return float(res)
+    elif isinstance(res, tuple):  # 总分 正确分 格式分
+        return res
     else:
         return float(res[0])

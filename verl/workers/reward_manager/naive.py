@@ -34,6 +34,8 @@ class NaiveRewardManager:
             return data.batch['rm_scores']
 
         reward_tensor = torch.zeros_like(data.batch['responses'], dtype=torch.float32)
+        correctness_tensor = torch.zeros_like(data.batch['responses'], dtype=torch.float32)
+        formatness_tensor = torch.zeros_like(data.batch['responses'], dtype=torch.float32)
 
         already_print_data_sources = {}
 
@@ -61,13 +63,21 @@ class NaiveRewardManager:
 
             extra_info = data_item.non_tensor_batch.get('extra_info', None)
 
-            score = self.compute_score(
+            score_ret = self.compute_score(
                 data_source=data_source,
                 solution_str=sequences_str,
                 ground_truth=ground_truth,
                 extra_info=extra_info,
             )
+            
+            if isinstance(score_ret, tuple):
+                score, correctness, formatness = score_ret
+            else:
+                score, correctness, formatness = score_ret, 0, 0
+            
             reward_tensor[i, valid_response_length - 1] = score
+            correctness_tensor[i, valid_response_length - 1] = correctness
+            formatness_tensor[i, valid_response_length - 1] = formatness
 
             if data_source not in already_print_data_sources:
                 already_print_data_sources[data_source] = 0
@@ -76,4 +86,4 @@ class NaiveRewardManager:
                 already_print_data_sources[data_source] += 1
                 print(sequences_str)
 
-        return reward_tensor
+        return reward_tensor, correctness_tensor, formatness_tensor

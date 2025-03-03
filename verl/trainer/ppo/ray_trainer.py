@@ -40,6 +40,8 @@ from verl.utils.dataset.rl_dataset import RLHFDataset, collate_fn
 from torch.utils.data import RandomSampler, SequentialSampler
 from torchdata.stateful_dataloader import StatefulDataLoader
 
+import re
+
 WorkerType = Type[Worker]
 
 
@@ -207,9 +209,16 @@ def reduce_metrics(metrics: dict):
     return metrics
 
 
-def _compute_response_info(batch):
+def _compute_response_info(batch, tokenizer=None):
     response_length = batch.batch['responses'].shape[-1]
-
+    
+    think_length = torch.zeros_like(batch.batch['responses']).sum(dim=-1)
+    if tokenizer:
+        response_lst = batch.batch['responses'].cpu().numpy().tolist()
+        rsp_str_lst = [tokenizer.decode(rsp) if rsp else None for rsp in response_lst]
+        think_ma_lst = [re.search('<think>([\s\S]+)</think>', rsp) for rsp in rsp_str_lst]
+        think_length = torch.Tensor([len(think_ma.group(1).strip()) if think_ma else 0 for think_ma in think_ma_lst])
+    
     prompt_mask = batch.batch['attention_mask'][:, :-response_length]
     response_mask = batch.batch['attention_mask'][:, -response_length:]
 
@@ -220,12 +229,16 @@ def _compute_response_info(batch):
         response_mask=response_mask,
         prompt_length=prompt_length,
         response_length=response_length,
+        think_length=think_length,
     )
 
 
-def compute_data_metrics(batch, use_critic=True):
+def compute_data_metrics(batch, use_critic=True, tokenizer=None):
     # TODO: add response length
     sequence_score = batch.batch['token_level_scores'].sum(-1)
+    sequence_correctness = batch.batch['correctness'].sum(-1)
+    sequence_formatness = batch.batch['formatness'].sum(-1)
+    
     sequence_reward = batch.batch['token_level_rewards'].sum(-1)
 
     advantages = batch.batch['advantages']
@@ -238,9 +251,10 @@ def compute_data_metrics(batch, use_critic=True):
 
     max_prompt_length = prompt_mask.size(-1)
 
-    response_info = _compute_response_info(batch)
+    response_info = _compute_response_info(batch, tokenizer)
     prompt_length = response_info['prompt_length']
     response_length = response_info['response_length']
+    think_length = response_info['think_length']
 
     valid_adv = torch.masked_select(advantages, response_mask)
     valid_returns = torch.masked_select(returns, response_mask)
@@ -255,6 +269,14 @@ def compute_data_metrics(batch, use_critic=True):
         # score
         'critic/score/mean':
             torch.mean(sequence_score).detach().item(),
+        'critic/correctness/mean':
+            torch.mean(sequence_correctness).detach().item(),
+        'critic/formatness/mean':
+            torch.mean(sequence_formatness).detach().item(),
+        
+        'critic/think_length/mean':
+            torch.mean(think_length).detach().item(),
+        
         'critic/score/max':
             torch.max(sequence_score).detach().item(),
         'critic/score/min':
@@ -523,16 +545,15 @@ class RayPPOTrainer(object):
             # Validation datasets are sent to inference engines as a whole batch,
             # which will schedule the memory themselves.
             batch_size=len(self.val_dataset),
-            shuffle=False,
+            shuffle=True,
             drop_last=False,
             collate_fn=collate_fn)
 
         assert len(self.train_dataloader) >= 1
-        assert len(
-            self.val_dataloader
-        ) == 1, "Validation dataloader must have a single batch, which inference engines will schedule the memory themselves."
+        assert len(self.val_dataloader) >= 1
 
         print(f'Size of train dataloader: {len(self.train_dataloader)}')
+        print(f'Size of val dataloader: {len(self.val_dataloader)}')
 
         # inject total_training_steps to actor/critic optim_config. This is hacky.
         total_training_steps = len(self.train_dataloader) * self.config.trainer.total_epochs
@@ -600,6 +621,9 @@ class RayPPOTrainer(object):
 
     def _validate(self):
         reward_tensor_lst = []
+        correctness_tensor_lst = []
+        formatness_tensor_lst = []
+        
         data_source_lst = []
 
         # Lists to collect samples for the table
@@ -643,31 +667,47 @@ class RayPPOTrainer(object):
             test_batch = test_batch.union(test_output_gen_batch)
 
             # evaluate using reward_function
-            reward_tensor = self.val_reward_fn(test_batch)
+            reward_tensor, correctness_tensor, formatness_tensor = self.val_reward_fn(test_batch)
 
             # Store scores
             scores = reward_tensor.sum(-1).cpu().tolist()
             sample_scores.extend(scores)
 
             reward_tensor_lst.append(reward_tensor)
+            correctness_tensor_lst.append(correctness_tensor)
+            formatness_tensor_lst.append(formatness_tensor)
+            
             data_source_lst.append(test_batch.non_tensor_batch.get('data_source', ['unknown'] * reward_tensor.shape[0]))
 
         self._maybe_log_val_generations_to_wandb(inputs=sample_inputs, outputs=sample_outputs, scores=sample_scores)
 
         reward_tensor = torch.cat(reward_tensor_lst, dim=0).sum(-1).cpu()  # (batch_size,)
+        correctness_tensor = torch.cat(correctness_tensor_lst, dim=0).sum(-1).cpu()
+        formatness_tenosor = torch.cat(formatness_tensor_lst, dim=0).sum(-1).cpu()
+        
         data_sources = np.concatenate(data_source_lst, axis=0)
 
         # evaluate test_score based on data source
         data_source_reward = {}
+        data_source_correctness = {}
+        data_source_formatness = {}
+        
         for i in range(reward_tensor.shape[0]):
             data_source = data_sources[i]
             if data_source not in data_source_reward:
                 data_source_reward[data_source] = []
+                data_source_correctness[data_source] = []
+                data_source_formatness[data_source] = []
+                
             data_source_reward[data_source].append(reward_tensor[i].item())
+            data_source_correctness[data_source].append(correctness_tensor[i].item())
+            data_source_formatness[data_source].append(formatness_tenosor[i].item())
 
         metric_dict = {}
         for data_source, rewards in data_source_reward.items():
             metric_dict[f'val/test_score/{data_source}'] = np.mean(rewards)
+            metric_dict[f'val/test_correctness/{data_source}'] = np.mean(data_source_correctness[data_source])
+            metric_dict[f'val/test_formatness/{data_source}'] = np.mean(data_source_formatness[data_source])
 
         return metric_dict
 
@@ -894,7 +934,7 @@ class RayPPOTrainer(object):
                             gen_baseline_output = self.actor_rollout_wg.generate_sequences(gen_baseline_batch)
 
                             batch = batch.union(gen_baseline_output)
-                            reward_baseline_tensor = self.reward_fn(batch)
+                            reward_baseline_tensor, _, _ = self.reward_fn(batch)
                             reward_baseline_tensor = reward_baseline_tensor.sum(dim=-1)
 
                             batch.pop(batch_keys=list(gen_baseline_output.batch.keys()))
@@ -944,8 +984,10 @@ class RayPPOTrainer(object):
                             batch = batch.union(reward_tensor)
 
                         # we combine with rule-based rm
-                        reward_tensor = self.reward_fn(batch)
+                        reward_tensor, correctness_tensor, formatness_tensor = self.reward_fn(batch)
                         batch.batch['token_level_scores'] = reward_tensor
+                        batch.batch['correctness'] = correctness_tensor
+                        batch.batch['formatness'] = formatness_tensor
 
                         # compute rewards. apply_kl_penalty if available
                         if not self.config.actor_rollout_ref.actor.get('use_kl_loss', False):
@@ -991,7 +1033,7 @@ class RayPPOTrainer(object):
                             self._save_checkpoint()
 
                 # collect metrics
-                metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic))
+                metrics.update(compute_data_metrics(batch=batch, use_critic=self.use_critic, tokenizer=self.tokenizer))
                 metrics.update(compute_timing_metrics(batch=batch, timing_raw=timing_raw))
 
                 # TODO: make a canonical logger that supports various backend
