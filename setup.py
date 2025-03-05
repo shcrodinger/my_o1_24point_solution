@@ -39,6 +39,8 @@ install_requires = [
   'transformers',
   'vllm<=0.6.3',
   'wandb',
+  'ray==2.42.1',
+  'flash-attn',
 ]
 
 TEST_REQUIRES = ['pytest', 'yapf', 'py-spy']

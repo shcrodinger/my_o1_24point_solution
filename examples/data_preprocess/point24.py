@@ -28,11 +28,11 @@ from tqdm import tqdm
 from datasets import Dataset
 
 # 构建24点
-def extract_solution(nums):
+def extract_solution(nums, target=24):
     
     def permutation(cnt, tmp):
         if cnt == 0:
-            return next_step(deepcopy(tmp), [])
+            return next_step(deepcopy(tmp), [], True, [])
         else:
             res, i = [], 0
             while i < len(nums):
@@ -42,38 +42,47 @@ def extract_solution(nums):
                 i += 1
             return res
     
-    def next_step(ns, st):
-        if len(ns) == 0 and len(st) == 1:
-            return [sum(st)]
-        
-        empty_ns = (len(ns) == 0)
-        num = ns.pop(0) if not empty_ns else st.pop(-1)
-        
+    def next_step(ns, st, top0=False, path=[]):
+        if len(st) == 1 and len(ns) == 0:
+            return [(st[0], path[0])]
         res = []
         
-        # 结合
-        for sign in ('+', '-', '*', '/'):
-            if (sign == '/' and num == 0) or (len(st) == 0 and sign in ('*', '/')):
-                continue
-            st_bk = deepcopy(st)
-            n = st_bk.pop(-1) if len(st) else 0
-            st_bk.append(eval(f'{n}{sign}{num}'))
-            res += next_step(ns, st_bk)
-        
         # 入栈
-        if not empty_ns:
-            st.append(num)
-            res += next_step(ns, st)
-            st.pop(-1)
+        if len(ns):
+            num = ns.pop(0)
+            st_bk = deepcopy(st) + [num]
+            path_bk = deepcopy(path) + [str(num)]
+            res += next_step(ns, st_bk, top0, path_bk)
             ns.insert(0, num)
-        else:
-            st.append(num)
-
+        
+        # 栈顶计算
+        if len(st):
+            if len(st) > 1:
+                st_bk = deepcopy(st)
+                path_bk = deepcopy(path)
+                n2, n1 = st_bk.pop(-1), st_bk.pop(-1)
+                p2, p1 = path_bk.pop(-1), path_bk.pop(-1)
+                for sign in ('+', '-', '*', '/'):
+                    if sign == '/' and n2 == 0: continue
+                    st_bk_bk = deepcopy(st_bk)
+                    path_bk_bk = deepcopy(path_bk)
+                    cal_str = f'{n1}{sign}{n2}'
+                    st_bk_bk.append(eval(cal_str))
+                    path_bk_bk.append(f'({p1}{sign}{p2})')
+                    res += next_step(ns, st_bk_bk, top0, path_bk_bk)
+            elif len(st) == 1 and top0:
+                res += next_step(ns, [-st[0]], False, ['-' + path[0]])
+        
         return res
-    
-    answer = permutation(len(nums), [])
 
-    return 24 if 24 in answer else 0
+    answer = permutation(len(nums), [])
+    res, info = 0, ''
+    for ans in answer:
+        if abs(ans[0] - target) < 1e-6:
+            res, info = target, ans[1]
+            break
+
+    return res, info
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -91,7 +100,7 @@ if __name__ == '__main__':
     exist = set()
     def find_all_nums(depth, tmp):
         if depth:
-            for n in range(10):
+            for n in range(1, 14):
                 tmp.append(n)
                 find_all_nums(depth - 1, tmp)
                 tmp.pop(-1)
@@ -124,7 +133,7 @@ The answer is xxx (Here is your final answer.)'''
     
             question_raw = ','.join([str(n) for n in nums])
             question = instruction_following.format(nums=question_raw)
-            solution = extract_solution(nums)
+            solution, reference = extract_solution(nums)
             
             data = {
                 "data_source": data_source,
@@ -142,6 +151,7 @@ The answer is xxx (Here is your final answer.)'''
                     'index': idx,
                     'answer': '',
                     "question": question_raw,
+                    'reference': reference
                 }
             }
             return data
