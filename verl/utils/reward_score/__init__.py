@@ -15,7 +15,10 @@
 
 
 def _default_compute_score(data_source, solution_str, ground_truth, extra_info=None):
-    if data_source == '24point':
+    if data_source == '8puzzle':
+        from . import npuzzle
+        res = npuzzle.compute_score(solution_str, ground_truth, extra_info)
+    elif data_source == '24point':
         from . import point24
         res = point24.compute_score(solution_str, ground_truth, extra_info)
     elif data_source == 'openai/gsm8k':
