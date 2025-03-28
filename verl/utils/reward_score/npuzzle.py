@@ -115,6 +115,8 @@ def extract_solution(solution_str, method='strict'):
         if ma:
             print(ma.group())
             final_answer = ma.group(1).strip().split('-')
+    
+    print(final_answer, solution_str)
 
     return final_answer
 
