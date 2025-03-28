@@ -21,10 +21,6 @@ def get_state_key(mt):
     state_key = '#'.join([str(mt[i][j]) for i in range(m) for j in range(n)])
     return state_key
 
-# 终结状态
-TERMINAL_MT = [[1, 2, 3], [4, 5, 6], [7, 8, 0]]
-TERMINAL_STATE = get_state_key(TERMINAL_MT)
-
 def clean_solution_str(solution_str):
     solution_str = solution_str.lower().strip()
     solution_str = solution_str[re.search('assistant\n', solution_str).end():].strip()
@@ -34,7 +30,7 @@ def regext_format_score(solution_str):
     format_ret = 0
     
     solution_str = clean_solution_str(solution_str)
-    format_pattern = '<think>[\s\S]+</think>[\s\S]+<answer>[\s\S]+<answer>$'
+    format_pattern = '^<think>[\s\S]+</think>[\s\S]+<answer>[\s\S]+<answer>$'
     if re.search(format_pattern, solution_str):
         format_ret += 0.5
     
@@ -53,21 +49,25 @@ def regext_format_score(solution_str):
     return format_ret
 
 # puzzle move is valid
-def check_answer_valid(mt, actions, reference, method='flexible'):
+def check_answer_valid(mt, actions, reference, target, method='flexible'):
     mt_bk = deepcopy(mt)
     
+    # 终结状态
+    TERMINAL_STATE = get_state_key(target)
+
     m, n = len(mt_bk), len(mt_bk[0])
     
     for i in range(m):
         for j in range(n):
             if mt_bk[i][j] == 0:
                 break
-    
+        if mt_bk[i][j] == 0: break
+   
     ops = {
-        'up': (0, 1),
-        'down': (0, -1),
-        'left': (1, 0),
-        'right': (-1, 0)
+        'up': (1, 0),
+        'down': (-1, 0),
+        'left': (0, 1),
+        'right': (0, -1)
     }
     
     ret = 0.0
@@ -78,6 +78,7 @@ def check_answer_valid(mt, actions, reference, method='flexible'):
         if 0 <= i + opx <= m - 1 and 0 <= j + opy <= n - 1:
             valid_action_cnt += 1
             mt_bk[i][j], mt_bk[i + opx][j + opy] = mt_bk[i + opx][j + opy], mt_bk[i][j]
+            i, j = i + opx, j + opy
         else:
             # 越界没有收益
             return ret
@@ -89,7 +90,7 @@ def check_answer_valid(mt, actions, reference, method='flexible'):
         else: return 0.0
     
     if get_state_key(mt_bk) == TERMINAL_STATE:
-        ret = 0.5 - min(max(valid_action_cnt - len(reference), 0) * 0.1, 0.5)
+        ret = 1.0 - min(max(valid_action_cnt - len(reference), 0) * 0.1, 0.5)
     else:
         # 不越界，稍微奖励一下
         ret = 0.1
@@ -107,7 +108,6 @@ def extract_solution(solution_str, method='strict'):
         if not ma:
             final_answer = []
         else:
-            # print(ma.group(1).strip())
             final_answer = ma.group(1).strip().split('-')
     elif method == 'flexible':
         ma = re.search("((left|right|up|down|\\-|\\s)+)", solution_str)
@@ -115,9 +115,6 @@ def extract_solution(solution_str, method='strict'):
         if ma:
             print(ma.group())
             final_answer = ma.group(1).strip().split('-')
-    
-    # print(final_answer)
-    # print(solution_str)
 
     return final_answer
 
@@ -133,18 +130,20 @@ def compute_score(solution_str, ground_truth, extra_info, method='strict', forma
         format_score: the score for the format
         score: the score for the correct answer
     """
-    
-    grid = extra_info['grid']
+
+    ndarry_to_list = lambda xs: [list(x) for x in xs]
+    grid = ndarry_to_list(extra_info['grid'])
+    target = ndarry_to_list(extra_info['target'])
+
     answer = extract_solution(solution_str=solution_str, method=method)
     regex_format_ret = regext_format_score(solution_str)
     
     reference = ground_truth.split('-')
     
-    total_score = check_answer_valid(grid, answer, reference) * score
+    total_score = check_answer_valid(grid, answer, reference, target) * score
     total_score += regex_format_ret * format_score
     
-    answer_flexible = extract_solution(solution_str=solution_str, method='strict')
-    correctness = check_answer_valid(grid, answer, reference, 'strict')
+    correctness = check_answer_valid(grid, answer, reference, target, 'strict')
     formatness = regex_format_ret * format_score
     
     return total_score, correctness, formatness
